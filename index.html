@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2b1d52">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="description" content="Sky Stack — tap to drop each sliding block and build the tallest tower you can. Free, works on phone and desktop.">
+<title>Sky Stack</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232b1d52'/><rect x='20' y='68' width='60' height='14' rx='3' fill='%23ff7a59'/><rect x='26' y='50' width='52' height='14' rx='3' fill='%23ffb347'/><rect x='30' y='32' width='42' height='14' rx='3' fill='%23ffe066'/></svg>">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:#2b1d52;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;color:#fff;overscroll-behavior:none}
+  body{user-select:none;-webkit-user-select:none;touch-action:none}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:fixed;top:calc(14px + env(safe-area-inset-top));left:0;right:0;display:flex;flex-direction:column;align-items:center;pointer-events:none}
+  .score{font-size:clamp(56px,16vw,88px);font-weight:900;line-height:1;text-shadow:0 4px 0 rgba(0,0,0,.18)}
+  .best{font-size:14px;letter-spacing:2px;text-transform:uppercase;opacity:.8;margin-top:4px}
+  .combo{margin-top:10px;font-weight:900;font-size:20px;letter-spacing:1px;color:#fff6c2;opacity:0;transform:scale(.6);transition:opacity .2s,transform .2s;text-shadow:0 2px 10px rgba(255,230,120,.8)}
+  .combo.show{opacity:1;transform:scale(1)}
+  .corner{position:fixed;top:calc(12px + env(safe-area-inset-top));right:12px;display:flex;gap:6px;z-index:5}
+  .corner button{font:inherit;width:42px;height:42px;border-radius:50%;border:0;background:rgba(255,255,255,.18);color:#fff;font-size:18px;cursor:pointer;backdrop-filter:blur(4px)}
+  .panel{position:fixed;left:0;right:0;top:calc(24vh + env(safe-area-inset-top));display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;padding:0 20px;pointer-events:none}
+  .panel.hidden{display:none}
+  .panel h1{font-size:clamp(44px,13vw,72px);font-weight:900;letter-spacing:-1px;text-shadow:0 6px 0 rgba(0,0,0,.15)}
+  .panel p{font-size:16px;opacity:.92;max-width:320px;line-height:1.4}
+  .tap{font-weight:800;letter-spacing:3px;text-transform:uppercase;font-size:15px;animation:blink 1.2s ease-in-out infinite}
+  @keyframes blink{50%{opacity:.35}}
+  .more{display:flex;gap:8px;justify-content:center;pointer-events:auto}
+  .more a{color:#fff;font-size:12px;text-decoration:none;background:rgba(255,255,255,.15);border-radius:20px;padding:6px 12px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div class="score" id="score">0</div>
+  <div class="best" id="best">Best 0</div>
+  <div class="combo" id="combo">PERFECT!</div>
+</div>
+<div class="corner">
+  <button id="sound" aria-label="Toggle sound">🔊</button>
+</div>
+<div class="panel" id="panel">
+  <h1 id="title">Sky Stack</h1>
+  <p id="msg">Tap to drop each sliding block. Line it up perfectly to keep it wide — anything hanging off gets sliced away!</p>
+  <div class="tap">Tap to start</div>
+  <div class="more">
+    <a href="https://dazzar2025.github.io/publicgames1/">🔢 Merge 2048</a>
+    <a href="https://dazzar2025.github.io/publicgames2/">🐍 Neon Snake</a>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const comboEl = document.getElementById('combo');
+  const panel = document.getElementById('panel');
+  const titleEl = document.getElementById('title');
+  const msgEl = document.getElementById('msg');
+  const soundBtn = document.getElementById('sound');
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  };
+  let best = store.get('skystack-best', 0);
+  let soundOn = store.get('skystack-sound', true);
+  bestEl.textContent = 'Best ' + best;
+  soundBtn.textContent = soundOn ? '🔊' : '🔇';
+
+  // ---------- audio ----------
+  let actx = null;
+  const SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+  function tone(freq, dur = 0.15, type = 'triangle', vol = 0.12) {
+    if (!soundOn) return;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type; o.frequency.value = freq;
+      g.gain.setValueAtTime(vol, actx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+      o.connect(g).connect(actx.destination);
+      o.start(); o.stop(actx.currentTime + dur);
+    } catch (e) {}
+  }
+  const note = i => 392 * Math.pow(2, SCALE[Math.min(i, SCALE.length - 1)] / 12);
+
+  // ---------- world ----------
+  const WW = 360;         // world width in units
+  const BH = 26;          // block height
+  const START_W = 190;
+  let W = 0, H = 0, dpr = 1, k = 1; // k = px per world unit
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    k = Math.min(W / WW, H / 560);
+  }
+
+  let stack, cur, debris, sparks, cam, camTarget, state = 'menu', combo, hueBase, shake = 0, stars;
+
+  function makeStars() {
+    stars = [];
+    for (let i = 0; i < 90; i++) stars.push({ x: Math.random() * WW * 1.6 - WW * 0.3, y: 600 + Math.random() * 6000, r: Math.random() * 1.6 + 0.4, tw: Math.random() * 6 });
+  }
+  function reset() {
+    hueBase = Math.floor(Math.random() * 360);
+    stack = [{ x: (WW - START_W) / 2, w: START_W, hue: hueBase }];
+    // a solid base pedestal
+    debris = []; sparks = []; combo = 0; cam = 0; camTarget = 0;
+    scoreEl.textContent = 0;
+    spawn();
+  }
+  function spawn() {
+    const top = stack[stack.length - 1];
+    const level = stack.length;
+    const fromLeft = level % 2 === 1;
+    const speed = Math.min(165 + level * 6, 430);
+    const off = Math.min(top.w + 30, 150);
+    cur = { x: fromLeft ? top.x - off : top.x + off, w: top.w, dir: fromLeft ? 1 : -1, speed, hue: hueBase + level * 9 };
+  }
+  function color(h, l = 62) { return `hsl(${h % 360}, 78%, ${l}%)`; }
+
+  function drop() {
+    if (state === 'menu' || state === 'over') { if (state === 'over' && performance.now() - overAt < 600) return; startGame(); return; }
+    const top = stack[stack.length - 1];
+    const diff = cur.x - top.x;
+    const tol = 5;
+    if (Math.abs(diff) <= tol) {
+      // perfect
+      combo++;
+      const nb = { x: top.x, w: top.w, hue: cur.hue };
+      if (combo >= 3) { // grow back a bit
+        const grow = Math.min(12, START_W - nb.w);
+        nb.x -= grow / 2; nb.w += grow;
+      }
+      stack.push(nb);
+      tone(note(combo - 1), 0.25, 'sine', 0.16);
+      flashCombo(combo >= 3 ? `PERFECT ×${combo}` : 'PERFECT!');
+      ring(nb);
+    } else {
+      combo = 0;
+      const overlapL = Math.max(cur.x, top.x);
+      const overlapR = Math.min(cur.x + cur.w, top.x + top.w);
+      const ow = overlapR - overlapL;
+      if (ow <= 0) {
+        // complete miss
+        debris.push({ x: cur.x, y: levelY(stack.length), w: cur.w, vy: 0, vx: cur.dir * 40, rot: 0, vr: cur.dir * 1.5, hue: cur.hue });
+        cur = null;
+        return gameOver();
+      }
+      const nb = { x: overlapL, w: ow, hue: cur.hue };
+      // the sliced piece
+      const cutX = diff > 0 ? overlapR : cur.x;
+      const cutW = cur.w - ow;
+      debris.push({ x: cutX, y: levelY(stack.length), w: cutW, vy: 0, vx: (diff > 0 ? 1 : -1) * 30, rot: 0, vr: (diff > 0 ? 1 : -1) * (1 + Math.random()), hue: cur.hue });
+      stack.push(nb);
+      tone(220 + Math.min(stack.length, 60) * 4, 0.12, 'square', 0.06);
+      shake = 4;
+    }
+    const sc = stack.length - 1;
+    scoreEl.textContent = sc;
+    scoreEl.animate([{ transform: 'scale(1.18)' }, { transform: 'scale(1)' }], { duration: 160 });
+    if (navigator.vibrate) try { navigator.vibrate(combo ? 25 : 12); } catch (e) {}
+    spawn();
+  }
+
+  function ring(b) {
+    const y = levelY(stack.length - 1);
+    for (let i = 0; i < 26; i++) {
+      const a = Math.random() * Math.PI * 2;
+      sparks.push({ x: b.x + b.w / 2 + Math.cos(a) * b.w / 2, y: y + BH / 2, vx: Math.cos(a) * 60, vy: Math.sin(a) * 40 - 40, life: 1 });
+    }
+  }
+  let comboTimer = 0;
+  function flashCombo(text) {
+    comboEl.textContent = text;
+    comboEl.classList.add('show');
+    clearTimeout(comboTimer);
+    comboTimer = setTimeout(() => comboEl.classList.remove('show'), 700);
+  }
+
+  let overAt = 0;
+  function gameOver() {
+    state = 'over'; overAt = performance.now();
+    tone(196, 0.5, 'sawtooth', 0.08);
+    setTimeout(() => tone(147, 0.6, 'sawtooth', 0.07), 160);
+    shake = 10;
+    const sc = stack.length - 1;
+    const isBest = sc > best;
+    if (isBest) { best = sc; store.set('skystack-best', best); bestEl.textContent = 'Best ' + best; }
+    setTimeout(() => {
+      titleEl.textContent = isBest ? 'New best!' : 'Game over';
+      msgEl.textContent = `Your tower is ${sc} block${sc === 1 ? '' : 's'} tall.` + (isBest ? ' 🏆' : ` Best: ${best}.`);
+      panel.querySelector('.tap').textContent = 'Tap to play again';
+      panel.classList.remove('hidden');
+    }, 650);
+  }
+  function startGame() {
+    reset();
+    state = 'play';
+    panel.classList.add('hidden');
+    tone(523, 0.12, 'sine', 0.12);
+  }
+
+  // world y (upwards) of the bottom of a level
+  const levelY = i => i * BH;
+  const BASE_SCREEN = () => H * 0.78; // screen y of level 0 bottom (in px) before camera
+
+  function toScreenY(wy) { return BASE_SCREEN() - (wy - cam) * k; }
+  function toScreenX(wx) { return (W - WW * k) / 2 + wx * k; }
+
+  // ---------- loop ----------
+  let last = 0;
+  function loop(t) {
+    const dt = Math.min(0.05, (t - (last || t)) / 1000); last = t;
+    if (state === 'play' && cur) {
+      cur.x += cur.dir * cur.speed * dt;
+      const top = stack[stack.length - 1];
+      const lim = Math.min(top.w + 30, 150);
+      if (cur.x > top.x + lim && cur.dir > 0) cur.dir = -1;
+      if (cur.x < top.x - lim && cur.dir < 0) cur.dir = 1;
+      if (cur.x + cur.w > WW + 60 && cur.dir > 0) cur.dir = -1;
+      if (cur.x < -60 && cur.dir < 0) cur.dir = 1;
+    }
+    // camera: keep top of stack around 45% of screen height
+    const n = stack ? stack.length : 1;
+    const topWorld = levelY(n + 1);
+    const desiredScreen = H * 0.42;
+    camTarget = Math.max(0, topWorld - (BASE_SCREEN() - desiredScreen) / k);
+    if (state === 'over') camTarget = Math.max(0, camTarget - Math.min(n * BH * 0.5, 400) * Math.min(1, (performance.now() - overAt) / 1500));
+    cam += (camTarget - cam) * Math.min(1, dt * 5);
+
+    debris.forEach(d => { d.vy -= 900 * dt; d.y += d.vy * dt; d.x += d.vx * dt; d.rot += d.vr * dt; });
+    debris = debris.filter(d => toScreenY(d.y) < H + 300);
+    sparks.forEach(s => { s.x += s.vx * dt; s.y -= s.vy * dt; s.vy -= 120 * dt; s.life -= dt * 1.6; });
+    sparks = sparks.filter(s => s.life > 0);
+    shake *= 0.86;
+
+    draw(t);
+    requestAnimationFrame(loop);
+  }
+
+  function block(wx, wy, w, hue, alpha = 1) {
+    const x = toScreenX(wx), y = toScreenY(wy + BH), bw = w * k, bh = BH * k;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color(hue, 60);
+    ctx.fillRect(x, y, bw, bh);
+    ctx.fillStyle = color(hue, 72);
+    ctx.fillRect(x, y, bw, Math.max(2, bh * 0.22));
+    ctx.fillStyle = color(hue, 48);
+    ctx.fillRect(x, y + bh * 0.82, bw, bh * 0.18);
+    ctx.globalAlpha = 1;
+  }
+
+  function draw(t) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
+    ctx.translate(sx, sy);
+    // sky gets darker & more starry as you climb
+    const height = cam / 1200;
+    const h1 = (hueBase || 260) + 200;
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    const lTop = Math.max(8, 55 - height * 30), lBot = Math.max(16, 75 - height * 30);
+    g.addColorStop(0, `hsl(${h1 % 360}, 55%, ${lTop}%)`);
+    g.addColorStop(1, `hsl(${(h1 + 40) % 360}, 60%, ${lBot}%)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(-20, -20, W + 40, H + 40);
+
+    // stars
+    const starA = Math.min(1, Math.max(0, height - 0.15));
+    if (starA > 0 && stars) {
+      ctx.fillStyle = '#fff';
+      stars.forEach(s => {
+        const y = toScreenY(s.y * 0.6 + cam * 0.4);
+        if (y < -5 || y > H + 5) return;
+        ctx.globalAlpha = starA * (0.5 + 0.5 * Math.sin(t / 500 + s.tw));
+        ctx.beginPath(); ctx.arc(toScreenX(s.x), y, s.r, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+    // clouds (parallax) near the ground
+    ctx.fillStyle = 'rgba(255,255,255,.18)';
+    for (let i = 0; i < 6; i++) {
+      const wy = 180 + i * 260;
+      const y = BASE_SCREEN() - (wy - cam * 0.7) * k;
+      if (y < -80 || y > H + 80) continue;
+      const x = ((i * 137 + t / 60 * (i % 2 ? 1 : -1)) % (W + 300) + W + 300) % (W + 300) - 150;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 70 * k, 18 * k, 0, 0, Math.PI * 2);
+      ctx.ellipse(x + 40 * k, y - 10 * k, 46 * k, 16 * k, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ground
+    const gy = toScreenY(0);
+    if (gy < H + 10) {
+      ctx.fillStyle = 'rgba(0,0,0,.25)';
+      ctx.fillRect(-20, gy, W + 40, H - gy + 40);
+    }
+    if (!stack) return;
+    // pedestal
+    const b0 = stack[0];
+    ctx.fillStyle = color(b0.hue, 40);
+    ctx.fillRect(toScreenX(b0.x), gy, b0.w * k, H - gy + 40);
+
+    // stack (only visible levels)
+    for (let i = 0; i < stack.length; i++) {
+      const y = toScreenY(levelY(i));
+      if (y < -BH * k || y - BH * k > H) continue;
+      block(stack[i].x, levelY(i), stack[i].w, stack[i].hue);
+    }
+    // current
+    if (cur && state === 'play') {
+      const top = stack[stack.length - 1];
+      // ghost guide
+      ctx.fillStyle = 'rgba(255,255,255,.08)';
+      ctx.fillRect(toScreenX(top.x), toScreenY(levelY(stack.length) + BH), top.w * k, BH * k);
+      block(cur.x, levelY(stack.length), cur.w, cur.hue);
+    }
+    // debris
+    debris.forEach(d => {
+      const cx = toScreenX(d.x + d.w / 2), cy = toScreenY(d.y + BH / 2);
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(d.rot);
+      ctx.fillStyle = color(d.hue, 58);
+      ctx.fillRect(-d.w * k / 2, -BH * k / 2, d.w * k, BH * k);
+      ctx.restore();
+    });
+    // sparks
+    sparks.forEach(s => {
+      ctx.globalAlpha = Math.max(0, s.life);
+      ctx.fillStyle = '#fff6c2';
+      ctx.fillRect(toScreenX(s.x) - 2, toScreenY(s.y) - 2, 4, 4);
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- input ----------
+  function onTap(e) {
+    if (e.target.closest('button, a')) return;
+    e.preventDefault();
+    drop();
+  }
+  window.addEventListener('pointerdown', onTap, { passive: false });
+  window.addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); if (!e.repeat) drop(); }
+  });
+  soundBtn.addEventListener('click', () => { soundOn = !soundOn; store.set('skystack-sound', soundOn); soundBtn.textContent = soundOn ? '🔊' : '🔇'; });
+  document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  window.addEventListener('resize', resize);
+
+  resize();
+  makeStars();
+  reset();
+  state = 'menu';
+  cur = null;
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
